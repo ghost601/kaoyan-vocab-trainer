@@ -99,6 +99,8 @@ input{font:inherit}
   background:var(--card-2);border:1px solid var(--line2);color:var(--ink2)}
 .dchip.first{background:#fff;border-color:var(--ink);color:var(--ink);font-weight:600;box-shadow:0 1px 0 rgba(27,24,21,.12)}
 .defmeta{font-family:var(--cjk);font-size:11.5px;color:var(--ink3);letter-spacing:.02em;padding-top:2px}
+.ai-note{text-align:center;font-family:var(--cjk);font-size:11.5px;color:var(--ink3);opacity:.8;
+  letter-spacing:.02em;padding:30px 0 4px}
 
 .opts{display:grid;gap:9px;margin-top:26px}
 .opt{display:flex;align-items:center;gap:13px;text-align:left;padding:14px 17px;border-radius:10px;
@@ -1260,6 +1262,7 @@ function renderStats(){
       '所以建议**绑定一个备份文件**：授权一次后，每次评分都会静默写回磁盘上的那个文件，清缓存也带不走它。Windows 上建议放在 D 盘或同步盘里。<br>' +
       '浏览器不支持绑定时，改用「自动下载备份」，每清空一轮队列导出一份带日期的 JSON。</div>' +
     '</div>' +
+    '<div class="ai-note">本项目由 AI 生成　·　词表与词频数据来自第三方开源项目</div>' +
     '<div style="height:40px"></div></div>';
 
   const setNew = $('#set-new');
