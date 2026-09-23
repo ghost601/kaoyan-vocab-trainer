@@ -1,0 +1,8 @@
+# 统一换行符，避免 Windows/Linux 协作时的 CRLF 噪音
+* text=auto eol=lf
+
+# 二进制/生成物不做换行符转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

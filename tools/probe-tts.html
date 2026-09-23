@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>tts probe</title>
+<div id="r">pending</div>
+<script>
+const log = [];
+const syn = window.speechSynthesis;
+log.push('speechSynthesis: ' + typeof syn);
+log.push('SpeechSynthesisUtterance: ' + typeof window.SpeechSynthesisUtterance);
+if (syn) {
+  log.push('voices@load: ' + syn.getVoices().length);
+  let spoke = null;
+  try {
+    const u = new SpeechSynthesisUtterance('test');
+    u.lang = 'en-US';
+    u.onstart = () => { spoke = 'start'; render(); };
+    u.onend = () => { spoke = 'end'; render(); };
+    u.onerror = e => { spoke = 'error:' + (e.error || '?'); render(); };
+    syn.speak(u);
+  } catch (e) { spoke = 'threw:' + e.name; }
+  setTimeout(() => {
+    const vs = syn.getVoices();
+    log.push('voices@1200ms: ' + vs.length);
+    log.push('en voices: ' + vs.filter(v => /^en/i.test(v.lang)).map(v => v.name).join(' | ').slice(0, 160));
+    log.push('speak 结果: ' + (spoke || '无声无息(既无 start 也无 error)'));
+    render();
+  }, 1200);
+  syn.onvoiceschanged = () => log.push('voiceschanged → ' + syn.getVoices().length);
+}
+function render(){ document.getElementById('r').textContent = log.join('\n'); }
+render();
+</script>

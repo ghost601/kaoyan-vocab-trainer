@@ -1,0 +1,21 @@
+# 依赖
+node_modules/
+.test-deps/
+
+# 构建产物（可由源码重建，且内含词表数据）
+build/
+deploy/
+考研词汇训练器.html
+
+# 词表数据：版权所限不进仓库，用 node tools/fetch-data.mjs 获取
+data-src/
+
+# 早期使用的词表，已被红宝书取代
+5 考研-乱序.txt
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
