@@ -23,6 +23,7 @@
 - **冲刺模式**：设定 30/45/60/90 天目标，每日配额自动按"剩余词数 ÷ 剩余天数"重算
 - **误操作可回退**：常驻撤销按钮，移出的词可搜索找回，进度快照逐字段还原
 - **数据三层防护**：实时写盘 + 持久化存储授权 + 绑定备份文件自动落盘
+- **跨设备同步**（可选）：进度存进你自己的 Cloudflare Workers；**两端合并而非覆盖**，各自背过的词都会保留
 - **单文件 1.9 MB**：无外部依赖、无 CDN、断网可用；部署版可装到手机桌面完全离线
 - **发音**：调用系统语音合成，自动挑选英文音色（本地语音优先）
 
@@ -134,6 +135,30 @@ node tools/prepare-deploy.mjs  # 可选：生成带 PWA 的部署包
 
 </details>
 
+<details>
+<summary><b>跨设备同步（可选，需要部署一个 Worker）</b></summary>
+
+默认关闭。开启后手机和电脑共用一份进度，停手 45 秒自动同步。
+
+进度原本只存在浏览器的 `localStorage`，按域名隔离。要跨设备就要有双方都能访问的存储点——这里用 **Cloudflare Workers + KV**，免费额度对个人使用绰绰有余。
+
+**核心设计是合并而不是覆盖。** 假设手机背了第 1–500 词、电脑背了第 501–1000 词，如果同步是"后写覆盖"，一同步就丢一半。所以服务端收到进度后逐词比较，**同一个词保留最后操作的那条**，今日计数取大、今日新学词取并集。合并满足交换律：谁先同步结果都一样。
+
+部署步骤（详见 [云端同步.md](云端同步.md)）：
+
+```powershell
+wrangler login
+cd worker
+wrangler kv namespace create KY_PROGRESS   # 把输出的 id 填进 wrangler.toml
+wrangler deploy
+```
+
+然后在训练器「数据」页 → 云端同步里填入服务地址，生成同步码，另一台设备填同一组即可。
+
+**同步码就是密钥。** 服务端没有账号系统，不存任何身份信息，只知道"某个 26 位字符串对应一份进度"。26 位 base32（去掉易混的 `I O 0 1`）约 130 bit 熵，无法猜测，但也别外传。
+
+</details>
+
 ## 数据来源与许可
 
 **本仓库的代码是 MIT，但词表数据不是，因此仓库不包含数据。**
@@ -198,10 +223,12 @@ node tools/prepare-deploy.mjs  # 可选：生成带 PWA 的部署包
 src/trainer.template.html    训练器模板源码，数据由构建脚本注入
 tools/build.mjs              主构建管线：清洗 → 结构化 → 分档 → 产出
 tools/fetch-data.mjs         拉取词表与词频数据
-tools/verify.mjs             184 项自动化校验
+tools/verify.mjs             199 项自动化校验
 tools/audit-data.mjs         词库质量诊断
 tools/prepare-deploy.mjs     生成 PWA 部署包
 tools/curve-search.mjs       新词分配曲线搜索（验证「均匀推进」优于前重后轻）
+worker/src/index.js          云端同步服务（Cloudflare Workers + KV）
+worker/wrangler.toml         同步服务的部署配置
 data-src/                    词表原始数据（gitignore）
 build/                       构建产物（gitignore）
 ```

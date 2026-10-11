@@ -1,0 +1,25 @@
+# 云端同步服务的部署配置
+#
+# 用法：
+#   1. 复制本文件为 wrangler.toml（这个真实配置不进仓库）
+#   2. wrangler login
+#   3. wrangler kv namespace create KY_PROGRESS
+#      把输出的 id 填到下面
+#   4. wrangler deploy
+#
+# 详细步骤见项目根目录的「云端同步.md」
+
+name = "kaoyan-vocab-sync"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+# 进度存储：云端只保存调度数据（stage / 到期时间 / 评分次数），不保存释义
+[[kv_namespaces]]
+binding = "KY_PROGRESS"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# 部署后会得到一个 *.workers.dev 地址；
+# 想用自己域名的子域（例如 sync.你的域名.com），取消下面注释并改好域名
+# [[routes]]
+# pattern = "sync.你的域名.com"
+# custom_domain = true

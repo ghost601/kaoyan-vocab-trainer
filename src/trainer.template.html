@@ -343,7 +343,8 @@ for (const w of WORDS) {
 
 // ===================== 状态 =====================
 let S = { words:{}, today:{ d:dayKey(), ids:[], rev:0, ok:0, quota:null }, streak:0, last:'' };
-let C = { dailyNew:85, mode:'card', batchSize:100, speak:true, targetDays:0, startDate:'', autoExport:false, wordSize:'m' };
+let C = { dailyNew:85, mode:'card', batchSize:100, speak:true, targetDays:0, startDate:'', autoExport:false, wordSize:'m',
+          syncId:'', syncApi:'', syncAt:0 };
 let sess = {};
 
 function load(){
@@ -351,9 +352,11 @@ function load(){
   try{ const c = JSON.parse(localStorage.getItem(CFGKEY)); if(c) C = Object.assign(C, c); }catch(e){}
   if(!S.today || S.today.d !== dayKey()) S.today = { d:dayKey(), ids:[], rev:0, ok:0, quota:null };
 }
-function save(){
+// fromSync=true 表示这次写入来自云端合并结果，不要再触发反向同步
+function save(fromSync){
   try{ localStorage.setItem(KEY, JSON.stringify(S)); localStorage.setItem(CFGKEY, JSON.stringify(C)); }catch(e){}
   writeBackup();   // 已绑定备份文件时静默写回，内部自带节流与异常吞掉
+  if(!fromSync) scheduleSync();
 }
 function touchStreak(){
   const d = dayKey();
@@ -992,6 +995,66 @@ async function initBackup(){
   });
 }
 
+// ===================== 云端同步 =====================
+// 同步码等同密钥：服务端没有账号系统，知道这串码就能读写这一份进度，所以别外传。
+// 26 位 base32 约 130 bit 熵，无法猜；去掉 I O 0 1 以免抄错。
+const SYNC_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const sync = { busy:false, err:'', timer:null, msg:'' };
+
+function genSyncId(){
+  const buf = new Uint8Array(26);
+  crypto.getRandomValues(buf);
+  return [...buf].map((b) => SYNC_ALPHABET[b % SYNC_ALPHABET.length]).join('');
+}
+const fmtId = (id) => String(id || '').replace(/(.{4})(?=.)/g, '$1 ');
+const syncReady = () => !!(C.syncId && C.syncApi);
+
+function syncStatusText(){
+  if(!C.syncId) return '未开启';
+  if(!C.syncApi) return '已生成同步码，还没填服务地址';
+  if(sync.busy) return '同步中…';
+  if(sync.err) return '上次失败：' + sync.err;
+  if(!C.syncAt) return '已连接，等待首次同步';
+  return '上次同步 ' + new Date(C.syncAt).toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+
+// 一次 PUT 完成双向同步：服务端把本地与云端合并后返回，省掉一次往返
+async function cloudSync(reason){
+  if(!syncReady() || sync.busy) return false;
+  sync.busy = true; sync.err = '';
+  try{
+    const url = C.syncApi.replace(/\/+$/, '') + '/p/' + C.syncId;
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cfg: C, state: S }),
+    });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if(data && data.state){
+      const before = Object.keys(S.words || {}).length;
+      S = Object.assign(S, data.state);
+      const after = Object.keys(S.words || {}).length;
+      C.syncAt = Date.now();
+      sync.msg = after > before ? '已合并云端 ' + (after - before) + ' 个词' : '已是最新';
+      save(true);          // 来自云端的结果，不再反向触发同步
+      paintKPIs();
+    }
+    return true;
+  }catch(e){
+    // 离线是常态：失败不打断使用，下次操作会自动重试
+    sync.err = (e && e.message) ? e.message : '网络不可达';
+    return false;
+  }finally{ sync.busy = false; }
+}
+
+// 停下来一段时间再同步，避免每答一题就发一次请求（进度约 400 KB）
+function scheduleSync(){
+  if(!syncReady()) return;
+  clearTimeout(sync.timer);
+  sync.timer = setTimeout(() => { cloudSync('auto'); }, 45000);
+}
+
 // ===================== 提示条 =====================
 let toastTimer = null;
 function showToast(msg, actionLabel, action){
@@ -1224,6 +1287,23 @@ function renderStats(){
       '<div class="note">按 K 或 ✓ 移出的词会进这里，最近移出的排在最前。误操作时：3 秒内点屏幕下方提示条上的「撤销」，或随时在这里搜索恢复。恢复后该词立刻回到今天的队列。</div>' +
     '</div>' +
 
+    '<h3 class="sec">云端同步</h3>' +
+    '<div class="tile">' +
+      '<div class="row"><span>状态</span><span class="n">' + esc(syncStatusText()) + (sync.msg ? '　' + esc(sync.msg) : '') + '</span></div>' +
+      (C.syncId ? '<div class="row"><span>同步码</span><span class="n" style="font-family:var(--mono);font-size:12.5px;letter-spacing:.05em">' + fmtId(C.syncId) + '</span></div>' : '') +
+      '<div class="setrow"><label>服务地址</label>' +
+        '<input id="sync-api" spellcheck="false" placeholder="https://kaoyan-vocab-sync.xxx.workers.dev" value="' + esc(C.syncApi) + '"' +
+        ' style="flex:1;min-width:200px;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card-2);font-family:var(--mono);font-size:12.5px;outline:none">' +
+      '</div>' +
+      '<div class="setrow"><label>两台设备填同一个同步码 + 同一个地址即可共用进度</label><div class="presets">' +
+        (C.syncId ? '' : '<button data-act="sync-gen">生成同步码</button>') +
+        (C.syncId ? '<button data-act="sync-now">立即同步</button><button data-act="sync-copy">复制码</button><button data-act="sync-new">换一个码</button><button data-act="sync-off">断开</button>' : '') +
+      '</div></div>' +
+      '<div class="note">同步会用<b>合并</b>而不是覆盖：手机和电脑各自背过的词都会保留，同一个词取最后操作的那次。' +
+      '同步码就是密钥——服务端不做账号，知道这串码就能读写这份进度，不要外传。' +
+      '每次同步上传约 400 KB，停手 45 秒后自动同步一次；离线时静默失败，下次操作会重试。</div>' +
+    '</div>' +
+
     '<h3 class="sec">设置与备份</h3>' +
     '<div class="tile">' +
       '<div class="setrow"><label>答题模式</label><div class="presets">' +
@@ -1314,6 +1394,42 @@ function renderStats(){
   });
   on('[data-act="rfile"]', readBackupFile);
   on('[data-act="unbind"]', unbindBackup);
+
+  // 云端同步
+  const apiInput = $('#sync-api');
+  if(apiInput){
+    apiInput.onchange = (e) => { C.syncApi = e.target.value.trim(); save(true); renderStats(); };
+    apiInput.onkeydown = (e) => { if(e.key === 'Enter') e.target.blur(); };
+  }
+  on('[data-act="sync-gen"]', () => {
+    C.syncId = genSyncId();
+    save(true);                    // 还没有地址，先不触发同步
+    renderStats();
+    showToast('已生成同步码，填好服务地址后点「立即同步」');
+  });
+  on('[data-act="sync-now"]', async () => {
+    if(!C.syncApi){ showToast('先在左边填上你的 Workers 服务地址'); return; }
+    showToast('同步中…');
+    const ok = await cloudSync('manual');
+    renderStats();
+    showToast(ok ? ('同步完成' + (sync.msg ? '：' + sync.msg : '')) : ('同步失败：' + (sync.err || '未知')));
+  });
+  on('[data-act="sync-copy"]', async () => {
+    try{ await navigator.clipboard.writeText(C.syncId); showToast('同步码已复制，粘到另一台设备上'); }
+    catch(e){ showToast('复制失败，请手动抄写：' + C.syncId); }
+  });
+  on('[data-act="sync-new"]', () => {
+    if(!confirm('换码后会与云端现有进度断开（旧数据不会删除，用旧码才能找回）。继续？')) return;
+    C.syncId = genSyncId(); C.syncAt = 0; sync.msg = '';
+    save(true); renderStats();
+    showToast('已换新码，下次同步会把本地进度推到新位置');
+  });
+  on('[data-act="sync-off"]', () => {
+    if(!confirm('断开云端同步？本地进度不受影响，云端数据也不会被删除。')) return;
+    C.syncId = ''; C.syncAt = 0; sync.err = ''; sync.msg = '';
+    save(true); renderStats();
+    showToast('已断开云端同步');
+  });
   paintBuried();
   bindBuried();
   el.querySelector('[data-act="reset"]').onclick = () => {
@@ -1480,6 +1596,14 @@ applyWordSize();
 paintKPIs();
 switchView('study');
 initBackup();   // 请求持久化存储 + 恢复备份文件绑定
+// 页面切到后台时补一次同步（hidden 时页面仍在运行，请求能正常发出）
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'hidden' && syncReady()){
+    clearTimeout(sync.timer);
+    cloudSync('hidden');
+  }
+});
+if(syncReady()) setTimeout(() => cloudSync('boot'), 800);
 })();
 </script>
 </body>

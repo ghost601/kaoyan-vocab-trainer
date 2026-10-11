@@ -19,3 +19,9 @@ data-src/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# wrangler 的本地缓存与状态（部署配置用 wrangler.toml.example 作模板，真实文件含 namespace id 不进仓库）
+worker/.wrangler/
+worker/node_modules/
+worker/wrangler.toml
+

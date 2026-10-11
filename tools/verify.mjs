@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -101,6 +101,100 @@ ok(!W.some(w => /；{2,}|；$/.test(w.text)), '无连续或悬空的分号');
     ok(mf.display === 'standalone' && mf.start_url === './', 'manifest 可安装且用相对路径', 'display=' + mf.display);
     const sw = fs.readFileSync(path.join(D2, 'sw.js'), 'utf8');
     ok(/kaoyan-vocab-[0-9a-f]{10}/.test(sw), '缓存名带内容哈希，更新后自动失效', (sw.match(/kaoyan-vocab-\w+/) || [''])[0]);
+  }
+}
+
+// ---- 2d. 云端同步（Worker 合并语义 + API 行为）----
+{
+  const wp = path.join(ROOT, 'worker', 'src', 'index.js');
+  if (fs.existsSync(wp)) {
+    console.log('[2d] 云端同步');
+    const mod = await import(pathToFileURL(wp).href);
+    const worker = mod.default, mergeProgress = mod.mergeProgress;
+
+    // 用内存 KV 模拟 Cloudflare 环境
+    const mockEnv = () => {
+      const store = new Map();
+      return { KY_PROGRESS: {
+        get: async (k) => (store.has(k) ? store.get(k) : null),
+        put: async (k, v) => { store.set(k, v); },
+      } };
+    };
+    const ID = 'ABCDEFGHJKLMNPQRSTUVWXYZ2345'.slice(0, 26);
+    const call = (env, method, body) => worker.fetch(new Request('https://sync.example/p/' + ID, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    }), env);
+
+    const env = mockEnv();
+    let res = await call(env, 'GET');
+    ok((await res.json()).empty === true, '云端为空时返回 empty 标记');
+
+    // 两台设备各自背了不同的词：合并后必须都保留
+    const mkState = (ids, t) => ({
+      words: Object.fromEntries(ids.map((i) => [i, { s: 1, n: 1, e: 0, due: t, last: t }])),
+      today: { d: '2026-09-15', ids: [], rev: 0, ok: 0, quota: null }, streak: 1, last: '2026-09-15',
+    });
+    res = await call(env, 'PUT', { cfg: { mode: 'card' }, state: mkState(['1', '2', '3'], 1000) });
+    let out = await res.json();
+    ok(Object.keys(out.state.words).length === 3, '首次推送写入 3 个词');
+
+    res = await call(env, 'PUT', { cfg: { speak: false }, state: mkState(['4', '5', '6'], 2000) });
+    out = await res.json();
+    ok(Object.keys(out.state.words).length === 6, '两台设备各背一半 → 合并后都在', Object.keys(out.state.words).sort().join(' '));
+
+    // 同一个词两端都动过：取最后操作的那次
+    const m1 = mergeProgress(
+      { words: { '7': { s: 1, n: 1, last: 100 } }, today: { d: '2026-09-15' } },
+      { words: { '7': { s: 5, n: 9, last: 900 } }, today: { d: '2026-09-15' } },
+    );
+    ok(m1.words['7'].s === 5, '同一个词取最后操作的那次', 'stage=' + m1.words['7'].s);
+    const m2 = mergeProgress(
+      { words: { '7': { s: 5, n: 9, last: 900 } }, today: { d: '2026-09-15' } },
+      { words: { '7': { s: 1, n: 1, last: 100 } }, today: { d: '2026-09-15' } },
+    );
+    ok(m2.words['7'].s === 5, '交换两端顺序结果一致（合并满足交换律）');
+
+    // 移出的词用 bt 作为时间戳
+    const m3 = mergeProgress(
+      { words: { '8': { k: 1, bt: 500 } }, today: { d: '2026-09-15' } },
+      { words: { '8': { s: 2, last: 400 } }, today: { d: '2026-09-15' } },
+    );
+    ok(m3.words['8'].k === 1, '移出记录按 bt 参与比较', 'k=' + m3.words['8'].k);
+
+    // 同一天的两端合并：计数取大，今日新学词取并集
+    const m4 = mergeProgress(
+      { words: {}, today: { d: '2026-09-15', ids: ['1', '2'], rev: 10, ok: 5 } },
+      { words: {}, today: { d: '2026-09-15', ids: ['2', '3'], rev: 7, ok: 9 } },
+    );
+    ok(m4.today.rev === 10 && m4.today.ok === 9, '同日计数取较大值');
+    ok(m4.today.ids.join(',') === '1,2,3', '同日新学词取并集', m4.today.ids.join(','));
+
+    // 非法与越界请求
+    const bad = await worker.fetch(new Request('https://sync.example/p/short', { method: 'GET' }), env);
+    ok(bad.status === 400, '同步码格式非法时拒绝', 'HTTP ' + bad.status);
+    const big = await worker.fetch(new Request('https://sync.example/p/' + ID, {
+      method: 'PUT', body: 'x'.repeat(4 * 1024 * 1024 + 1),
+    }), env);
+    ok(big.status === 413, '超大请求体被拒绝', 'HTTP ' + big.status);
+    const opt = await worker.fetch(new Request('https://sync.example/p/' + ID, { method: 'OPTIONS' }), env);
+    ok(opt.status === 204 && opt.headers.get('Access-Control-Allow-Origin') === '*', '预检请求返回 CORS 头');
+    const put = await call(env, 'PUT', { cfg: {}, state: mkState(['1'], 1) });
+    ok(put.headers.get('Access-Control-Allow-Origin') === '*', '响应带 CORS 头，可跨域调用');
+
+    // 同步码生成：26 位、无易混字符、无碰撞
+    const ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const seen = new Set();
+    for (let i = 0; i < 200; i++) {
+      const buf = new Uint8Array(26);
+      crypto.getRandomValues(buf);
+      seen.add([...buf].map((b) => ALPHA[b % ALPHA.length]).join(''));
+    }
+    const sample = [...seen][0];
+    ok(seen.size === 200, '200 次生成的同步码无重复');
+    ok(sample.length === 26 && !/[IO01]/.test(sample), '同步码 26 位且不含 I O 0 1', sample);
+    ok([...seen].every((s) => /^[A-HJ-NP-Z2-9]{26}$/.test(s)), '全部符合服务端校验规则');
   }
 }
 
