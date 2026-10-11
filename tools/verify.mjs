@@ -765,5 +765,58 @@ console.log('[10] 自动朗读状态');
   ok(!$5('#spk'), '拼写模式没有可读的英文题干，不显示发音键');
 }
 
+// 云端同步界面：关键是「粘贴已有同步码」这个入口必须存在
+console.log('[11] 云端同步界面');
+{
+  const cfg = { dailyNew:3, mode:'card', batchSize:100, speak:false, targetDays:0, startDate:'',
+                autoExport:false, wordSize:'m', syncId:'', syncApi:'https://sync.example.workers.dev', syncAt:0 };
+  const dom6 = new JSDOM(html, {
+    runScripts:'dangerously', url:'http://localhost/', pretendToBeVisual:true,
+    beforeParse(w){ w.localStorage.setItem('ky.cfg.v2', JSON.stringify(cfg)); },
+  });
+  const w6 = dom6.window, d6 = w6.document;
+  const $6 = (s) => d6.querySelector(s);
+  const wait6 = (ms) => new Promise((r) => setTimeout(r, ms));
+  const readCfg = () => JSON.parse(w6.localStorage.getItem('ky.cfg.v2'));
+  await wait6(60);
+
+  d6.querySelector('.tabs button[data-view="stats"]').dispatchEvent(new w6.MouseEvent('click', { bubbles:true }));
+  await wait6(40);
+
+  ok(!!$6('#sync-id'), '存在同步码输入框（第二台设备粘贴用）');
+  ok(!!$6('#sync-api'), '存在服务地址输入框');
+  ok(readCfg().syncApi === 'https://sync.example.workers.dev', '构建时注入的地址生效');
+
+  // 第二台设备的典型操作：粘贴另一台设备上的码
+  const paste = (val) => {
+    const el = $6('#sync-id');
+    el.value = val;
+    el.dispatchEvent(new w6.Event('change', { bubbles:true }));
+  };
+
+  paste('abcd efgh jklm npqr stuv wxyz 23');   // 小写 + 空格
+  await wait6(40);
+  ok(readCfg().syncId === 'ABCDEFGHJKLMNPQRSTUVWXYZ23', '粘贴带空格的小写码能正确规范化', readCfg().syncId);
+
+  paste('SHORTCODE');
+  await wait6(40);
+  ok(readCfg().syncId === 'ABCDEFGHJKLMNPQRSTUVWXYZ23', '长度不对时拒绝并保留原值', readCfg().syncId);
+
+  // 生成新码（此时已有码，会先弹确认）
+  w6.confirm = () => true;
+  $6('[data-act="sync-gen"]').dispatchEvent(new w6.MouseEvent('click', { bubbles:true }));
+  await wait6(40);
+  const gen = readCfg().syncId;
+  ok(/^[A-HJ-NP-Z2-9]{26}$/.test(gen) && gen !== 'ABCDEFGHJKLMNPQRSTUVWXYZ23', '「生成」得到新的合法同步码', gen);
+  ok(!!$6('[data-act="sync-copy"]'), '生成后出现「复制」按钮');
+  ok(!!$6('[data-act="sync-now"]'), '存在「立即同步」按钮');
+
+  // 断开
+  $6('[data-act="sync-off"]').dispatchEvent(new w6.MouseEvent('click', { bubbles:true }));
+  await wait6(40);
+  ok(readCfg().syncId === '', '断开后清空同步码');
+  ok(!!$6('[data-act="sync-gen"]'), '断开后回到「生成」状态');
+}
+
 console.log('\n' + (fail ? `✗ ${fail} / ${total} 项失败` : `✓ 全部通过（${total} 项）`));
 process.exitCode = fail ? 1 : 0;

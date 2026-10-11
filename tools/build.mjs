@@ -228,7 +228,10 @@ fs.writeFileSync(path.join(OUT, 'kaoyan-anki.tsv'),
   '#separator:tab\n#html:true\n#columns:单词\t释义\t频次\t标签\n' + anki.join('\n') + '\n', 'utf8');
 
 // ---------- 产出：训练器数据 ----------
-const payload = { meta: { built: new Date().toISOString().slice(0, 10), total: words.length, stats }, words };
+// 同步服务地址：构建时用 KY_SYNC_API 注入，训练器把它作为默认值。
+// 开源仓库构建时留空，各人填自己的地址（避免把私人服务地址写进公开代码）。
+const SYNC_API = (process.env.KY_SYNC_API || '').trim();
+const payload = { meta: { built: new Date().toISOString().slice(0, 10), total: words.length, stats, syncApi: SYNC_API }, words };
 fs.writeFileSync(path.join(OUT, 'words.json'), JSON.stringify(payload, null, 0), 'utf8');
 fs.writeFileSync(path.join(OUT, 'ky-data.js'), 'window.KY_DATA=' + JSON.stringify(payload) + ';', 'utf8');
 

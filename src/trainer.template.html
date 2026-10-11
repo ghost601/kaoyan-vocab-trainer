@@ -351,6 +351,9 @@ function load(){
   try{ const r = JSON.parse(localStorage.getItem(KEY)); if(r && r.words) S = Object.assign(S, r); }catch(e){}
   try{ const c = JSON.parse(localStorage.getItem(CFGKEY)); if(c) C = Object.assign(C, c); }catch(e){}
   if(!S.today || S.today.d !== dayKey()) S.today = { d:dayKey(), ids:[], rev:0, ok:0, quota:null };
+  // 构建时注入的默认同步服务地址，用户没自己填过就用它
+  const defApi = (DATA.meta && DATA.meta.syncApi) || '';
+  if(defApi && !C.syncApi) C.syncApi = defApi;
 }
 // fromSync=true 表示这次写入来自云端合并结果，不要再触发反向同步
 function save(fromSync){
@@ -1290,16 +1293,24 @@ function renderStats(){
     '<h3 class="sec">云端同步</h3>' +
     '<div class="tile">' +
       '<div class="row"><span>状态</span><span class="n">' + esc(syncStatusText()) + (sync.msg ? '　' + esc(sync.msg) : '') + '</span></div>' +
-      (C.syncId ? '<div class="row"><span>同步码</span><span class="n" style="font-family:var(--mono);font-size:12.5px;letter-spacing:.05em">' + fmtId(C.syncId) + '</span></div>' : '') +
+      '<div class="setrow"><label>同步码</label>' +
+        '<input id="sync-id" spellcheck="false" autocomplete="off" placeholder="把另一台设备上的 26 位同步码粘到这里" value="' + (C.syncId ? fmtId(C.syncId) : '') + '"' +
+        ' style="flex:1;min-width:220px;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card-2);font-family:var(--mono);font-size:12.5px;letter-spacing:.04em;outline:none">' +
+        '<div class="presets">' +
+          '<button data-act="sync-gen">' + (C.syncId ? '换新码' : '生成') + '</button>' +
+          (C.syncId ? '<button data-act="sync-copy">复制</button>' : '') +
+        '</div>' +
+      '</div>' +
       '<div class="setrow"><label>服务地址</label>' +
         '<input id="sync-api" spellcheck="false" placeholder="https://kaoyan-vocab-sync.xxx.workers.dev" value="' + esc(C.syncApi) + '"' +
         ' style="flex:1;min-width:200px;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card-2);font-family:var(--mono);font-size:12.5px;outline:none">' +
       '</div>' +
-      '<div class="setrow"><label>两台设备填同一个同步码 + 同一个地址即可共用进度</label><div class="presets">' +
-        (C.syncId ? '' : '<button data-act="sync-gen">生成同步码</button>') +
-        (C.syncId ? '<button data-act="sync-now">立即同步</button><button data-act="sync-copy">复制码</button><button data-act="sync-new">换一个码</button><button data-act="sync-off">断开</button>' : '') +
+      '<div class="setrow"><label>两台设备填同一组同步码 + 地址，进度就会合并</label><div class="presets">' +
+        '<button data-act="sync-now">立即同步</button>' +
+        (C.syncId ? '<button data-act="sync-off">断开</button>' : '') +
       '</div></div>' +
-      '<div class="note">同步会用<b>合并</b>而不是覆盖：手机和电脑各自背过的词都会保留，同一个词取最后操作的那次。' +
+      '<div class="note">第一台设备点「生成」得到同步码，第二台设备把同一串码粘进上面的输入框即可，两边的词会合并到一起。' +
+      '同步用<b>合并</b>而不是覆盖：手机和电脑各自背过的词都会保留，同一个词取最后操作的那次。<br>' +
       '同步码就是密钥——服务端不做账号，知道这串码就能读写这份进度，不要外传。' +
       '每次同步上传约 400 KB，停手 45 秒后自动同步一次；离线时静默失败，下次操作会重试。</div>' +
     '</div>' +
@@ -1396,16 +1407,34 @@ function renderStats(){
   on('[data-act="unbind"]', unbindBackup);
 
   // 云端同步
+  const idInput = $('#sync-id');
+  if(idInput){
+    const commit = (e) => {
+      const raw = e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
+      if(raw && raw.length !== 26){
+        showToast('同步码是 26 位，你这段有 ' + raw.length + ' 位，检查一下有没有漏抄');
+        e.target.value = C.syncId ? fmtId(C.syncId) : '';
+        return;
+      }
+      if(raw === C.syncId){ e.target.value = raw ? fmtId(raw) : ''; return; }
+      C.syncId = raw; C.syncAt = 0; sync.err = ''; sync.msg = '';
+      save(true); renderStats();
+      if(raw) showToast('同步码已设置，点「立即同步」开始合并进度');
+    };
+    idInput.onchange = commit;
+    idInput.onkeydown = (e) => { if(e.key === 'Enter') e.target.blur(); };
+  }
   const apiInput = $('#sync-api');
   if(apiInput){
     apiInput.onchange = (e) => { C.syncApi = e.target.value.trim(); save(true); renderStats(); };
     apiInput.onkeydown = (e) => { if(e.key === 'Enter') e.target.blur(); };
   }
   on('[data-act="sync-gen"]', () => {
-    C.syncId = genSyncId();
-    save(true);                    // 还没有地址，先不触发同步
+    if(C.syncId && !confirm('换一个新码会与云端现有进度断开（旧数据不删除，用旧码才能找回）。\n如果只是想在另一台设备上用同一份进度，应该把当前这串码粘过去，而不是换码。继续？')) return;
+    C.syncId = genSyncId(); C.syncAt = 0; sync.msg = ''; sync.err = '';
+    save(true);
     renderStats();
-    showToast('已生成同步码，填好服务地址后点「立即同步」');
+    showToast('已生成新同步码。把这串码粘到其他设备的同一位置即可共用进度');
   });
   on('[data-act="sync-now"]', async () => {
     if(!C.syncApi){ showToast('先在左边填上你的 Workers 服务地址'); return; }
@@ -1417,12 +1446,6 @@ function renderStats(){
   on('[data-act="sync-copy"]', async () => {
     try{ await navigator.clipboard.writeText(C.syncId); showToast('同步码已复制，粘到另一台设备上'); }
     catch(e){ showToast('复制失败，请手动抄写：' + C.syncId); }
-  });
-  on('[data-act="sync-new"]', () => {
-    if(!confirm('换码后会与云端现有进度断开（旧数据不会删除，用旧码才能找回）。继续？')) return;
-    C.syncId = genSyncId(); C.syncAt = 0; sync.msg = '';
-    save(true); renderStats();
-    showToast('已换新码，下次同步会把本地进度推到新位置');
   });
   on('[data-act="sync-off"]', () => {
     if(!confirm('断开云端同步？本地进度不受影响，云端数据也不会被删除。')) return;
